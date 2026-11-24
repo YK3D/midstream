@@ -26,6 +26,12 @@ export type Suggestion = Verdict & { source: 'draft' | 'note' | 'sent' }
  */
 export type Applied = { level: Effort | null; isSupported: boolean; isOverride: boolean }
 
+/** The parts of the band the settings panel can switch off; all on by default. */
+export type Features = { attach: boolean; effort: boolean; usage: boolean; lastNote: boolean; divider: boolean }
+
+/** A small preview of an attached image: its size in pixels and their colours, as hex. */
+export type Thumb = { width: number; height: number; hex: string }
+
 /** One usage window as the API last reported it. */
 export type Rate = { percent: number; resetsAt: string | null }
 
@@ -58,8 +64,12 @@ declare module 'claude-code' {
       lines: number
       /** Files picked with the attach button, by path, waiting to go with the next note. */
       attachments: string[]
+      /** Previews of attached images, by path. */
+      thumbs: Record<string, Thumb>
       /** Which panel is open under the toolbar, if any. */
-      detail: 'effort' | 'usage' | null
+      detail: 'effort' | 'usage' | 'settings' | null
+      /** Which parts of the band are shown. Kept across chats in the store too. */
+      features: Features
       tick: number
     }
   }

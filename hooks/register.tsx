@@ -4,13 +4,16 @@ import type { EngineInterface, PromptOrigin, Register } from 'claude-code'
 import type { Applied, EffortMode, Limits, Verdict } from '../types'
 
 import {
+  ALL_ON,
   BARS,
   DIVIDER,
+  FEATURES,
   FIVE_HOURS,
   LABEL,
   LEVELS,
   MODES,
   MODE_LABEL,
+  PASTE_IMAGE,
   PICK_FILES,
   THRESHOLDS,
   USAGE_BLUE,
@@ -20,10 +23,16 @@ import {
   decide,
   effortMeter,
   glyphFor,
+  isImage,
+  parseThumbs,
+  thumbScript,
+  thumbSvg,
   isMode,
   levelIndex,
   modeLine,
   suggest,
+  toFeatures,
+  updateResult,
   usageRings,
   wantedLevel,
   weekOf,
@@ -70,6 +79,8 @@ const lines = atom({ plugin: 'midstream', key: 'lines' } as const, 1)
 const attachments = atom({ plugin: 'midstream', key: 'attachments' } as const, [])
 const detail = atom({ plugin: 'midstream', key: 'detail' } as const, null)
 const tick = atom({ plugin: 'midstream', key: 'tick' } as const, 0)
+const features = atom({ plugin: 'midstream', key: 'features' } as const, ALL_ON)
+const thumbs = atom({ plugin: 'midstream', key: 'thumbs' } as const, {})
 
 const sameApplied = (a: Applied | null, b: Applied) =>
   a !== null && a.level === b.level && a.isSupported === b.isSupported && a.isOverride === b.isOverride
@@ -124,6 +135,10 @@ export const register: Register = on => {
       // The effort choice carries over between chats; anything unknown falls back.
       const mode = await $.store.get('effortMode')
       await update($, effortMode, (): EffortMode => (isMode(mode) ? mode : 'session'))
+
+      // Which parts of the band are shown, as the settings panel last left them.
+      const shown = toFeatures(await $.store.get('features'))
+      await update($, features, () => shown)
 
       // Left behind by versions that had a Hold switch.
       await $.store.delete('holdOn')
@@ -283,6 +298,8 @@ export const register: Register = on => {
       const wanted = await read($, lines)
       const files = await read($, attachments)
       const open = await read($, detail)
+      const show = await read($, features)
+      const previews = await read($, thumbs)
 
       const five = windowOf(now, usage.five, started)
       const week = weekOf(now, usage.week)
@@ -300,8 +317,8 @@ export const register: Register = on => {
       const reserved =
         3 +
         1 +
-        (files.length > 0 ? 1 : 0) +
-        (open === 'effort' ? 7 : open === 'usage' ? 5 : 0)
+        (files.length > 0 ? (files.some(f => previews[f]) && Svg ? 3 : 1) : 0) +
+        (open === 'effort' ? 7 : open === 'usage' ? 5 : open === 'settings' ? 3 : 0)
       const minRows = isTerminal || room < 12 ? 2 : 4
       const spare = isTerminal ? room - reserved - 1 : room - reserved
       const rowsFor = (n: number) => Math.max(minRows, Math.min(n, isTerminal ? 8 : 12, spare))
@@ -361,11 +378,58 @@ export const register: Register = on => {
 
           if (paths.length > 0) {
             await update($, attachments, list => [...new Set([...list, ...paths])])
+            await preview(paths)
           } else if (picked.exitCode !== 0) {
             $.ui.toast(`Could not open the file picker: ${picked.stderr.trim().slice(0, 120)}`)
           }
         } catch (error) {
           $.ui.toast(`Could not open the file picker: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+
+      // Small previews of attached images, on the surfaces that draw vectors. A preview
+      // that cannot be made leaves the file's glyph in its place.
+      const preview = async (paths: readonly string[]) => {
+        const images = paths.filter(isImage)
+        if (!Svg || images.length === 0) return
+
+        try {
+          const made = await $.process.run(['powershell.exe', '-NoProfile', '-Command', thumbScript(images)], {
+            timeoutMs: 60_000,
+          })
+          const found = parseThumbs(made.stdout, images)
+          if (Object.keys(found).length > 0) {
+            await update($, thumbs, t => ({ ...t, ...found }))
+          }
+        } catch {
+          // no preview: the chip shows the glyph
+        }
+      }
+
+      // Paste: the clipboard's image saved as a PNG (or files copied in Explorer), attached
+      // like picked files. The note field itself takes text only.
+      const paste = async () => {
+        try {
+          const got = await $.process.run(['powershell.exe', '-NoProfile', '-STA', '-Command', PASTE_IMAGE], {
+            timeoutMs: 30_000,
+          })
+          const paths = got.stdout
+            .split(/\r?\n/)
+            .map(p => p.trim())
+            .filter(p => p !== '')
+
+          if (paths.length > 0) {
+            await update($, attachments, list => [...new Set([...list, ...paths])])
+            await preview(paths)
+          } else {
+            $.ui.toast(
+              got.exitCode === 0
+                ? 'No image or files on the clipboard'
+                : `Could not read the clipboard: ${got.stderr.trim().slice(0, 120)}`,
+            )
+          }
+        } catch (error) {
+          $.ui.toast(`Could not read the clipboard: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
 
@@ -413,6 +477,7 @@ export const register: Register = on => {
 
         typed = ''
         await update($, attachments, () => [])
+        await update($, thumbs, () => ({}))
         if ((await read($, suggestion))?.source === 'note') {
           await update($, suggestion, () => null)
         }
@@ -420,8 +485,21 @@ export const register: Register = on => {
         await update($, sent, n => n + 1)
       }
 
-      // The same as typing /reload-plugins: run once the session is idle.
-      const reload = async () => {
+      // Refresh: fetch the newest midstream from its GitHub marketplace, install it if it
+      // is newer, then reload the plugins (as /reload-plugins does) so it takes effect.
+      const refresh = async () => {
+        $.ui.toast('Checking GitHub for a newer midstream…')
+        try {
+          await $.process.run(['claude', 'plugin', 'marketplace', 'update', PLUGIN], { timeoutMs: 150_000 })
+          const ran = await $.process.run(['claude', 'plugin', 'update', `${PLUGIN}@${PLUGIN}`, '--json'], {
+            timeoutMs: 150_000,
+          })
+          const { line } = updateResult(ran.stdout)
+          $.ui.toast(ran.exitCode === 0 ? line : `Update failed: ${line}`)
+        } catch (error) {
+          $.ui.toast(`Could not check for updates: ${error instanceof Error ? error.message : String(error)}`)
+        }
+
         try {
           await $.command.run({ command: 'reload-plugins' })
         } catch (error) {
@@ -429,7 +507,18 @@ export const register: Register = on => {
         }
       }
 
-      const toggle = (which: 'effort' | 'usage') => () =>
+      const flip = (k: keyof typeof ALL_ON) => async () => {
+        const now = await read($, features)
+        const flipped = { ...now, [k]: !now[k] }
+        await update($, features, () => flipped)
+        try {
+          await $.store.set('features', flipped)
+        } catch {
+          // the choice still holds for this chat
+        }
+      }
+
+      const toggle = (which: 'effort' | 'usage' | 'settings') => () =>
         update($, detail, d => (d === which ? null : which))
 
       const choose = (picked: EffortMode) => async () => {
@@ -504,7 +593,10 @@ export const register: Register = on => {
           <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
             {files.map((path, i) => (
               <Box flexDirection="row" alignItems="center" columnGap={1}>
-                <Text>{`${glyphFor(path)} ${baseName(path)}`}</Text>
+                {Svg && previews[path] ? (
+                  <Svg source={thumbSvg(previews[path], 36)} alt={`Preview of ${baseName(path)}`} height={36} />
+                ) : null}
+                <Text>{Svg && previews[path] ? baseName(path) : `${glyphFor(path)} ${baseName(path)}`}</Text>
                 <Button
                   key={`remove-${i}`}
                   plain
@@ -540,85 +632,55 @@ export const register: Register = on => {
 
       const rings = Svg ? (
         <Svg
-          source={usageRings(five.percent, week.percent, 18)}
+          source={usageRings(five.percent, week.percent, 32)}
           alt={`5-hour ${pct(five.percent)} used, weekly ${pct(week.percent)} used`}
+          width={32}
+          height={32}
         />
       ) : (
         <Text color={USAGE_BLUE}>◔</Text>
       )
 
-      // A control with a description that shows while the pointer is over it: a card drawn
-      // over the field above, revealed by the surface on hover, so nothing reflows.
-      const withTip = (name: string, tip: string, isRightEdge: boolean, ...control: JSX.Element[]) => (
-        <Box key={`tip-${name}`} flexDirection="row" alignItems="center" columnGap={1}>
-          {control}
-          <Box
-            position="absolute"
-            top={-2}
-            {...(isRightEdge ? { right: 0 } : { left: 0 })}
-            display="none"
-            hover={{ display: 'flex' }}
-            backgroundColor="text"
-            paddingX={1}
-          >
-            <Text color="inverseText" size="caption" wrap="truncate-end">
-              {tip}
-            </Text>
-          </Box>
+      // Collapsed, the button reads the 5-hour window alone: how much is used and the time
+      // left until it resets. The weekly window is the inner ring, and in the panel.
+      const fiveLeft = five.headline === 'Reset' || five.headline === '5 hours' ? null : five.headline
+      const usageLabel = `5h ${pct(five.percent)}${fiveLeft ? ` · ${fiveLeft} left` : ''}`
+
+      const group = (...children: JSX.Element[]) => (
+        <Box flexDirection="row" alignItems="center" columnGap={1}>
+          {children}
         </Box>
       )
 
-      // Time left in each window, on the button itself: the 5-hour countdown (or its
-      // estimate) and the weekly one.
-      const fiveLeft = five.headline === 'Reset' || five.headline === '5 hours' ? null : five.headline
-      const weekLeft = week.headline.startsWith('resets in ') ? week.headline.slice('resets in '.length) : null
-      const usageLabel =
-        `5h ${pct(five.percent)}${fiveLeft ? ` ↻ ${fiveLeft}` : ''}` +
-        ` · week ${pct(week.percent)}${weekLeft ? ` ↻ ${weekLeft}` : ''}`
-
       const toolbar = (
         <Box flexDirection="row" alignItems="center" columnGap={2}>
-          {withTip(
-            'attach',
-            'Attach files to your note: Claude opens them with its own tools',
-            false,
-            <Button key="attach" plain dimColor onPress={attach}>
-              {files.length > 0 ? `+ Attach · ${files.length}` : '+ Attach'}
-            </Button>,
-          )}
-          {withTip(
-            'effort',
-            'Effort: how hard Claude thinks on each request. Click to pick Default, Auto or a level',
-            false,
-            meter,
-            <Button key="effort" plain {...(open === 'effort' ? {} : { dimColor: true })} onPress={toggle('effort')}>
-              {`${effortLabel}${isUnsupported ? ' ⚠' : ''}`}
-            </Button>,
-          )}
-          {withTip(
-            'usage',
-            'Plan usage: 5-hour and weekly windows, ↻ time until each resets. Click for details',
-            false,
-            rings,
-            <Button key="usage" plain {...(open === 'usage' ? {} : { dimColor: true })} onPress={toggle('usage')}>
-              {usageLabel}
-            </Button>,
-          )}
+          {show.attach &&
+            group(
+              <Button key="attach" plain dimColor onPress={attach}>
+                {files.length > 0 ? `+ Attach · ${files.length}` : '+ Attach'}
+              </Button>,
+              <Button key="paste" plain dimColor label="Paste" onPress={paste} />,
+            )}
+          {show.effort &&
+            group(
+              meter,
+              <Button key="effort" plain {...(open === 'effort' ? {} : { dimColor: true })} onPress={toggle('effort')}>
+                {`${effortLabel}${isUnsupported ? ' ⚠' : ''}`}
+              </Button>,
+            )}
+          {show.usage &&
+            group(
+              rings,
+              <Button key="usage" plain {...(open === 'usage' ? {} : { dimColor: true })} onPress={toggle('usage')}>
+                {usageLabel}
+              </Button>,
+            )}
           {spacer}
-          {withTip(
-            'reload',
-            'Reload plugins: picks up a new version of this mod (and any other)',
-            true,
-            <Button key="reload" plain dimColor label="↻" onPress={reload} />,
-          )}
-          {withTip(
-            'send',
-            working ? 'Claude reads it at its next step, mid-response (Enter)' : 'Send as a new message (Enter)',
-            true,
-            <Button key="send" variant="primary" onPress={() => send(typed)}>
-              {working ? 'Send note' : 'Send'}
-            </Button>,
-          )}
+          <Button key="settings" plain {...(open === 'settings' ? {} : { dimColor: true })} label="⚙" onPress={toggle('settings')} />
+          <Button key="refresh" plain dimColor label="↻" onPress={refresh} />
+          <Button key="send" variant="primary" onPress={() => send(typed)}>
+            {working ? 'Send note' : 'Send'}
+          </Button>
         </Box>
       )
 
@@ -690,7 +752,32 @@ export const register: Register = on => {
         </Box>
       )
 
-      const panel = open === 'effort' ? effortPanel : open === 'usage' ? usagePanel : null
+      // Settings: switch parts of the band on or off. Hiding Effort hides the button only;
+      // the level chosen stays in force.
+      const settingsPanel = (
+        <Box flexDirection="column" rowGap={isTerminal ? 0 : 'xs'}>
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} rowGap="xs">
+            {FEATURES.map(([k, name]) => (
+              <Button
+                key={`feature-${k}`}
+                label={`${show[k] ? '✓' : '○'} ${name}`}
+                {...(show[k] ? { variant: 'primary' as const } : { plain: true as const, dimColor: true })}
+                onPress={flip(k)}
+              />
+            ))}
+          </Box>
+          {dim('Show or hide parts of this bar. Hiding Effort keeps the chosen level in force. ↻ checks GitHub for a newer midstream and reloads.')}
+        </Box>
+      )
+
+      const panel =
+        open === 'effort' && show.effort
+          ? effortPanel
+          : open === 'usage' && show.usage
+            ? usagePanel
+            : open === 'settings'
+              ? settingsPanel
+              : null
 
       const sentLine = note && (
         <Box flexDirection="row" alignItems="center" columnGap={1}>
@@ -707,8 +794,8 @@ export const register: Register = on => {
           {field}
           {toolbar}
           {panel}
-          {sentLine}
-          <Box marginTop={isTerminal ? 0 : 'xs'}>{divider}</Box>
+          {show.lastNote && sentLine}
+          {show.divider && <Box marginTop={isTerminal ? 0 : 'xs'}>{divider}</Box>}
         </Box>
       )
     } catch (error) {

@@ -1,4 +1,4 @@
-import type { Applied, Effort, EffortMode, Part, Rate, Verdict } from '../types'
+import type { Applied, Effort, EffortMode, Features, Part, Rate, Thumb, Verdict } from '../types'
 
 export const FIVE_HOURS = 5 * 60 * 60 * 1000
 
@@ -346,3 +346,132 @@ export const PICK_FILES = [
   "$d.Filter='Photos and documents|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.pdf;*.txt;*.md;*.csv;*.json;*.docx;*.xlsx;*.pptx|All files|*.*'",
   "if($d.ShowDialog($f) -eq 'OK'){$d.FileNames|ForEach-Object{[Console]::Out.WriteLine($_)}}",
 ].join(';')
+
+// ---- settings and updates ----------------------------------------------------
+
+/** The parts of the band the settings panel switches, in the order it lists them. */
+export const FEATURES: readonly (readonly [keyof Features, string])[] = [
+  ['attach', 'Attach'],
+  ['effort', 'Effort'],
+  ['usage', 'Usage'],
+  ['lastNote', 'Last note'],
+  ['divider', 'Divider'],
+]
+
+export const ALL_ON: Features = { attach: true, effort: true, usage: true, lastNote: true, divider: true }
+
+/** Features as stored: anything missing or not a yes/no falls back to on. */
+export function toFeatures(raw: unknown): Features {
+  const saved = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  const pick = (k: keyof Features) => (typeof saved[k] === 'boolean' ? (saved[k] as boolean) : true)
+
+  return { attach: pick('attach'), effort: pick('effort'), usage: pick('usage'), lastNote: pick('lastNote'), divider: pick('divider') }
+}
+
+/**
+ * What `claude plugin update --json` reported, as one line for a toast, and whether a
+ * newer version was installed (so the plugins need a reload).
+ */
+export function updateResult(stdout: string): { line: string; isNew: boolean } {
+  const last = stdout
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l.startsWith('{'))
+    .pop()
+
+  try {
+    const r = last ? (JSON.parse(last) as Record<string, unknown>) : {}
+    if (r.updateOutcome === 'up_to_date') {
+      return { line: `midstream is up to date (${String(r.newVersion ?? r.oldVersion ?? '')})`, isNew: false }
+    }
+    if (r.outcome === 'ok' && typeof r.newVersion === 'string') {
+      return { line: `Updated midstream ${String(r.oldVersion ?? '?')} → ${r.newVersion}`, isNew: true }
+    }
+    if (typeof r.message === 'string') return { line: r.message, isNew: false }
+  } catch {
+    // not the JSON line expected: say so below
+  }
+
+  return { line: 'Could not read the update result', isNew: false }
+}
+
+/**
+ * PowerShell that saves the clipboard's image to a new PNG in the temp folder and prints
+ * its path, or prints the paths of files copied in Explorer; prints nothing otherwise.
+ */
+export const PASTE_IMAGE = [
+  'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
+  '$c=[System.Windows.Forms.Clipboard]',
+  "if($c::ContainsImage()){$p=Join-Path $env:TEMP ('midstream-paste-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.png');$c::GetImage().Save($p,[System.Drawing.Imaging.ImageFormat]::Png);[Console]::Out.WriteLine($p)}" +
+    // one statement with the `if`: a `;` before `elseif` breaks it
+    'elseif($c::ContainsFileDropList()){$c::GetFileDropList()|ForEach-Object{[Console]::Out.WriteLine($_)}}',
+].join(';')
+
+// ---- image previews -----------------------------------------------------------
+
+export const isImage = (path: string) => IMAGES.test(path)
+
+/**
+ * PowerShell that shrinks each image to fit 48 by 36 pixels and prints one line per
+ * image: its place in the list|width|height|the pixels as hex colours. An image it cannot
+ * read is skipped. Paths go in with forward slashes: Windows drops the backslashes on the
+ * way to PowerShell, and .NET opens either.
+ * The desktop draws no embedded pictures, so the preview is drawn from these pixels.
+ */
+export function thumbScript(paths: readonly string[]): string {
+  const list = paths.map(p => `'${p.replace(/\\/g, '/').replace(/'/g, "''")}'`).join(',')
+
+  return [
+    'Add-Type -AssemblyName System.Drawing',
+    `$n=0;foreach($p in @(${list})){try{` +
+      '$i=[System.Drawing.Image]::FromFile($p);$s=[Math]::Min(48/$i.Width,36/$i.Height);' +
+      '$w=[Math]::Max(1,[int]($i.Width*$s));$h=[Math]::Max(1,[int]($i.Height*$s));' +
+      '$b=New-Object System.Drawing.Bitmap $w,$h;$g=[System.Drawing.Graphics]::FromImage($b);' +
+      "$g.InterpolationMode='HighQualityBicubic';$g.DrawImage($i,0,0,$w,$h);$g.Dispose();$i.Dispose();" +
+      '$sb=New-Object System.Text.StringBuilder;' +
+      "for($y=0;$y -lt $h;$y++){for($x=0;$x -lt $w;$x++){$c=$b.GetPixel($x,$y);[void]$sb.Append($c.R.ToString('x2')+$c.G.ToString('x2')+$c.B.ToString('x2'))}};" +
+      "$b.Dispose();[Console]::Out.WriteLine([string]$n+'|'+$w+'|'+$h+'|'+$sb.ToString())}catch{};$n++}",
+  ].join(';')
+}
+
+/** The previews in the script's output, by the path at each place; malformed lines are skipped. */
+export function parseThumbs(stdout: string, paths: readonly string[]): Record<string, Thumb> {
+  const out: Record<string, Thumb> = {}
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const [at, w, h, hex] = line.trim().split('|')
+    const path = paths[Number(at)]
+    const width = Number(w)
+    const height = Number(h)
+    if (path && hex && width > 0 && height > 0 && hex.length === width * height * 6 && /^[0-9a-f]+$/.test(hex)) {
+      out[path] = { width, height, hex }
+    }
+  }
+
+  return out
+}
+
+/** A preview drawn as one rect per pixel (runs of one colour merged), `size` pixels tall. */
+export function thumbSvg(t: Thumb, size: number): string {
+  const rects: string[] = []
+
+  for (let y = 0; y < t.height; y++) {
+    let x = 0
+    while (x < t.width) {
+      const at = (y * t.width + x) * 6
+      const color = t.hex.slice(at, at + 6)
+      let run = 1
+      while (x + run < t.width && t.hex.slice(at + run * 6, at + run * 6 + 6) === color) run++
+      rects.push(`<rect x="${x}" y="${y}" width="${run}" height="1" fill="#${color}"/>`)
+      x += run
+    }
+  }
+
+  const width = Math.round((size * t.width) / t.height)
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${size}" viewBox="0 0 ${t.width} ${t.height}" shape-rendering="crispEdges">` +
+    rects.join('') +
+    '</svg>'
+  )
+}

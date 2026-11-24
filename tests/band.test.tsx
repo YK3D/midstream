@@ -11,6 +11,10 @@ import {
   glyphFor,
   levelIndex,
   suggest,
+  parseThumbs,
+  thumbSvg,
+  toFeatures,
+  updateResult,
   usageRings,
   weekOf,
   windowOf,
@@ -58,15 +62,11 @@ test('the bar has the note field, attach, effort, usage and send on each surface
     // The surface always draws an Enter hint beside the field: it is the Enter key alone,
     // never a second "send", and never an empty pill.
     expect(field?.props.submitLabel).toBe('↵')
-    for (const key of ['attach', 'send', 'usage', 'effort', 'reload']) {
+    for (const key of ['attach', 'paste', 'send', 'usage', 'effort', 'settings', 'refresh']) {
       expect(await ui.find({ type: 'Button', key })).toBeDefined()
     }
-    // Every toolbar control carries a description the surface reveals on hover.
-    const drawn = JSON.stringify(await ui.drawn())
-    for (const tip of ['Attach files to your note', 'Effort: how hard Claude thinks', 'Plan usage:', 'Send as a new message']) {
-      expect(drawn).toContain(tip)
-    }
-    expect(drawn).toContain('"display":"none"')
+    // No hover cards: nothing hidden waiting for the pointer.
+    expect(JSON.stringify(await ui.drawn())).not.toContain('"display":"none"')
     // Hold mode is gone: no switch, no Finish.
     expect(await ui.find({ type: 'Button', key: 'hold' })).toBeUndefined()
     expect(await ui.find({ type: 'Button', key: 'finish' })).toBeUndefined()
@@ -323,7 +323,7 @@ test('a short band still shows every feature, with a smaller field', async ($, o
   for (const key of ['attach', 'send', 'usage', 'effort']) {
     expect(await ui.find({ type: 'Button', key })).toBeDefined()
   }
-  expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% ↻ 3h 12m · week –')
+  expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% · 3h 12m left')
   await ui.unmount()
 })
 
@@ -378,7 +378,7 @@ test('both windows from the API show on every surface, in one chart', async ($, 
     const ui = await $.ui.mount({ ...BAND, surface })
 
     expect(JSON.stringify(await ui.drawn())).not.toContain('could not draw')
-    expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% ↻ 3h 12m · week 12% ↻ 4d 2h')
+    expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% · 3h 12m left')
 
     await ui.press({ key: 'usage' })
     const drawn = JSON.stringify(await ui.drawn())
@@ -670,6 +670,79 @@ test('the effort meter fills exactly one bar per level, Low one and Max five', (
   expect(fills(effortMeter(levelIndex('high'), 12))).toBe(3)
   expect(fills(effortMeter(levelIndex('max'), 12))).toBe(5)
   expect((effortMeter(2, 12).match(/<rect/g) ?? []).length).toBe(5)
+})
+
+test('settings hide parts of the bar, and the choice is kept for the next chat', async ($, on) => {
+  mock.clock(on, { now: 1_000_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  const kept = new Map<string, unknown>()
+  on('store.get', (_, e) => ({ value: kept.get(e.key) }))
+  on('store.set', (_, e) => {
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', () => ({ value: undefined }))
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'feature-usage' })
+  await ui.press({ key: 'feature-attach' })
+
+  expect(await ui.find({ type: 'Button', key: 'usage' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'attach' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'paste' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'effort' })).toBeDefined()
+  expect(kept.get('features')).toEqual({ attach: false, effort: true, usage: false, lastNote: true, divider: true })
+
+  // Back on again.
+  await ui.press({ key: 'feature-usage' })
+  expect(await ui.find({ type: 'Button', key: 'usage' })).toBeDefined()
+  await ui.press({ key: 'settings' })
+  await ui.unmount()
+})
+
+test('paste attaches the image saved from the clipboard', async ($, on) => {
+  world($, on)
+  const runs: string[] = []
+  on('process.run', (_, e) => {
+    runs.push(e.argv.join(' '))
+    return {
+      value: { exitCode: 0, stdout: 'C:\\Temp\\midstream-paste-1.png\r\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'paste' })
+  expect(runs[0]).toContain('Clipboard')
+  expect(JSON.stringify(await ui.drawn())).toContain('midstream-paste-1.png')
+  await ui.unmount()
+})
+
+test('stored settings fall back to on, and the update result reads as one line', () => {
+  expect(toFeatures(undefined)).toEqual({ attach: true, effort: true, usage: true, lastNote: true, divider: true })
+  expect(toFeatures({ usage: false, divider: 'no' }).usage).toBe(false)
+  expect(toFeatures({ usage: false, divider: 'no' }).divider).toBe(true)
+
+  expect(
+    updateResult('Checking…\n{"outcome":"ok","updateOutcome":"up_to_date","oldVersion":"0.12.0","newVersion":"0.12.0"}'),
+  ).toEqual({ line: 'midstream is up to date (0.12.0)', isNew: false })
+  expect(updateResult('{"outcome":"ok","updateOutcome":"updated","oldVersion":"0.12.0","newVersion":"0.13.0"}')).toEqual({
+    line: 'Updated midstream 0.12.0 → 0.13.0',
+    isNew: true,
+  })
+  expect(updateResult('garbage').line).toBe('Could not read the update result')
+})
+
+test('an image preview is read from the script and drawn pixel by pixel', () => {
+  const thumbs = parseThumbs('0|2|1|ff0000ff0000\r\nbroken line\r\n1|2|2|00\r\n', ['C:\\a\\cat.png', 'C:\\b.png'])
+  expect(Object.keys(thumbs)).toEqual(['C:\\a\\cat.png'])
+
+  const svg = thumbSvg(thumbs['C:\\a\\cat.png']!, 36)
+  // Two red pixels in a row are one rect.
+  expect((svg.match(/<rect/g) ?? []).length).toBe(1)
+  expect(svg).toContain('#ff0000')
+  expect(svg).toContain('width="72"')
+  expect(svg).not.toContain('data:')
 })
 
 test('attachments are named by their file and handed over as paths', () => {
