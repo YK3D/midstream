@@ -581,8 +581,16 @@ export const register: Register = on => {
               </Button>,
             )}
           {spacer}
-          <Button key="settings" plain {...(open === 'settings' ? {} : { dimColor: true })} label="⚙" onPress={toggle('settings')} />
-          <Button key="refresh" plain dimColor label="↻" onPress={refresh} />
+          {/* A pair at the right edge, drawn alike: the gear forced to its text form (U+FE0E)
+              so it is never a color emoji that sits taller than ↻. */}
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Button key="settings" plain label="Settings" {...(open === 'settings' ? {} : { dimColor: true })} onPress={toggle('settings')}>
+              <Text>{'⚙︎'}</Text>
+            </Button>
+            <Button key="refresh" plain dimColor label="Check for updates" onPress={refresh}>
+              <Text>↻</Text>
+            </Button>
+          </Box>
         </Box>
       )
 
