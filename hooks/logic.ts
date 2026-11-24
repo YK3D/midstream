@@ -1,4 +1,4 @@
-import type { Applied, Effort, EffortMode, Features, Part, Rate, Thumb, Verdict } from '../types'
+import type { Effort, Features, Part, Rate, Thumb, Verdict } from '../types'
 
 export const FIVE_HOURS = 5 * 60 * 60 * 1000
 
@@ -27,82 +27,8 @@ export const USAGE_BLUE = '#2C84DB'
 const TRACK = '#8b8b8b'
 
 /** Which score reaches which level: the lowest score each level starts at. */
-export const THRESHOLDS = 'Low ≤ 0 · Medium 1–2 · High 3–4 · Extra 5–6 · Max 7+'
-
 export function levelIndex(level: Effort): number {
   return LEVELS.indexOf(level)
-}
-
-// ---- the effort selector ---------------------------------------------------
-
-/** The selector's choices, in the order they are drawn. */
-export const MODES: readonly EffortMode[] = ['session', 'auto', ...LEVELS]
-
-export const MODE_LABEL: Record<EffortMode, string> = {
-  session: 'Default',
-  auto: 'Auto',
-  ...LABEL,
-}
-
-/** A value read back from the store is used only if it is one of the choices. */
-export function isMode(value: unknown): value is EffortMode {
-  return typeof value === 'string' && (MODES as readonly string[]).includes(value)
-}
-
-/**
- * The level the selector asks for on the next request, or null to leave the engine's
- * own: `session` never sets one, `auto` sets the last sent prompt's once there is one.
- */
-export function wantedLevel(mode: EffortMode, auto: Verdict | null): Effort | null {
-  if (mode === 'session') return null
-  if (mode === 'auto') return auto?.level ?? null
-  return mode
-}
-
-/**
- * What one main-conversation request will run at. `current` is the request's own
- * effort as the engine set it; where it is absent the model or the effort setting takes
- * none, so nothing is changed. A number (internal builds) is left alone.
- */
-export function decide(
-  current: Effort | number | undefined,
-  want: Effort | null,
-): { send: Effort | null; applied: Applied } {
-  if (current === undefined) {
-    return { send: null, applied: { level: null, isSupported: false, isOverride: false } }
-  }
-
-  const own = typeof current === 'string' ? current : null
-
-  if (want === null || want === current || typeof current === 'number') {
-    return { send: null, applied: { level: own, isSupported: true, isOverride: false } }
-  }
-
-  return { send: want, applied: { level: want, isSupported: true, isOverride: true } }
-}
-
-/** One line saying what the selected mode does, for the selector's panel. */
-export function modeLine(mode: EffortMode, auto: Verdict | null): string {
-  if (mode === 'session') {
-    return "Claude Code's own effort setting is used. The side note doesn't change it."
-  }
-
-  if (mode === 'auto') {
-    return auto
-      ? `Each prompt you send sets the level. Your last prompt asked for ${LABEL[auto.level]} (${auto.why}).`
-      : 'Each prompt you send sets the level. Until you send one, the default is used.'
-  }
-
-  return `Every request in this chat runs at ${LABEL[mode]}, until you change it here.`
-}
-
-/** What the last request ran at, as one short line. */
-export function appliedLine(applied: Applied | null): string {
-  if (applied === null) return 'No request sent yet in this chat.'
-  if (!applied.isSupported) return 'This model or effort setting takes no level, so none was set.'
-  if (applied.level === null) return 'The last request ran at the model default.'
-
-  return `The last request ran at ${LABEL[applied.level]}${applied.isOverride ? ', set by the side note' : ''}.`
 }
 
 export const HARD =
@@ -396,16 +322,57 @@ export function updateResult(stdout: string): { line: string; isNew: boolean } {
 }
 
 /**
- * PowerShell that saves the clipboard's image to a new PNG in the temp folder and prints
- * its path, or prints the paths of files copied in Explorer; prints nothing otherwise.
+ * PowerShell that runs while the note field has focus: on each Ctrl+V or Shift+Insert
+ * pressed while a
+ * Claude window is in front, it saves the clipboard's image to a new PNG in the temp
+ * folder and prints its path, or prints the paths of files copied in Explorer. Clipboard
+ * text is left to the field, which pastes it itself.
  */
-export const PASTE_IMAGE = [
+export const WATCH_PASTE = [
   'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
+  "Add-Type -Namespace Midstream -Name Keys -MemberDefinition '" +
+    '[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);' +
+    '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();' +
+    '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr window, out uint process);' +
+    "'",
   '$c=[System.Windows.Forms.Clipboard]',
-  "if($c::ContainsImage()){$p=Join-Path $env:TEMP ('midstream-paste-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.png');$c::GetImage().Save($p,[System.Drawing.Imaging.ImageFormat]::Png);[Console]::Out.WriteLine($p)}" +
-    // one statement with the `if`: a `;` before `elseif` breaks it
-    'elseif($c::ContainsFileDropList()){$c::GetFileDropList()|ForEach-Object{[Console]::Out.WriteLine($_)}}',
+  '$was=$false',
+  'while($true){' +
+    '$k=[Midstream.Keys];$on={param($v)($k::GetAsyncKeyState($v) -band 0x8000) -ne 0};' +
+    '$down=((& $on 0x11) -and (& $on 0x56)) -or ((& $on 0x10) -and (& $on 0x2D));' +
+    'if($down -and -not $was){' +
+    '$id=[uint32]0;[void][Midstream.Keys]::GetWindowThreadProcessId([Midstream.Keys]::GetForegroundWindow(),[ref]$id);' +
+    "if((Get-Process -Id $id -ErrorAction SilentlyContinue).ProcessName -like 'claude*'){" +
+    "if($c::ContainsImage()){$p=Join-Path $env:TEMP ('midstream-paste-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.png');$c::GetImage().Save($p,[System.Drawing.Imaging.ImageFormat]::Png);[Console]::Out.WriteLine($p)}" +
+    'elseif($c::ContainsFileDropList()){$c::GetFileDropList()|ForEach-Object{[Console]::Out.WriteLine($_)}}' +
+    '}};$was=$down;Start-Sleep -Milliseconds 40}',
 ].join(';')
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/**
+ * A script as PowerShell's -EncodedCommand takes it (UTF-16LE, base64), so no quote or
+ * backslash in it is touched on the way.
+ */
+export function encodePs(script: string): string {
+  const bytes: number[] = []
+  for (let i = 0; i < script.length; i++) {
+    const code = script.charCodeAt(i)
+    bytes.push(code & 255, code >> 8)
+  }
+
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out +=
+      B64[(n >> 18) & 63]! +
+      B64[(n >> 12) & 63]! +
+      (i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '=') +
+      (i + 2 < bytes.length ? B64[n & 63]! : '=')
+  }
+
+  return out
+}
 
 // ---- image previews -----------------------------------------------------------
 

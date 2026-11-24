@@ -1,40 +1,33 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register } from 'claude-code'
 
-import type { Applied, EffortMode, Limits, Verdict } from '../types'
+import type { Limits } from '../types'
 
 import {
   ALL_ON,
   BARS,
   DIVIDER,
+  WATCH_PASTE,
   FEATURES,
   FIVE_HOURS,
   LABEL,
   LEVELS,
-  MODES,
-  MODE_LABEL,
-  PASTE_IMAGE,
   PICK_FILES,
-  THRESHOLDS,
   USAGE_BLUE,
   WEEK_VIOLET,
-  appliedLine,
   baseName,
-  decide,
+  encodePs,
   effortMeter,
   glyphFor,
   isImage,
   parseThumbs,
   thumbScript,
   thumbSvg,
-  isMode,
   levelIndex,
-  modeLine,
   suggest,
   toFeatures,
   updateResult,
   usageRings,
-  wantedLevel,
   weekOf,
   windowOf,
   withFiles,
@@ -42,10 +35,7 @@ import {
 
 const PLUGIN = 'midstream'
 
-/** What the suggested level was read from, as the explanation says it. */
-const SOURCE = { draft: 'your draft', note: 'this note', sent: 'your last prompt' } as const
-
-/** Where a prompt came from that the person wrote: only these set the Auto level. */
+/** Where a prompt came from that the person wrote: only these set the recommendation. */
 const NOT_THE_PERSON = new Set([
   'task-notification',
   'scheduled-trigger',
@@ -67,9 +57,6 @@ function isFromPerson(origin: PromptOrigin | undefined): boolean {
 }
 
 const suggestion = atom({ plugin: 'midstream', key: 'suggestion' } as const, null)
-const autoPick = atom({ plugin: 'midstream', key: 'autoPick' } as const, null)
-const effortMode = atom({ plugin: 'midstream', key: 'effortMode' } as const, 'session')
-const applied = atom({ plugin: 'midstream', key: 'applied' } as const, null)
 const limits = atom({ plugin: 'midstream', key: 'limits' } as const, { five: null, week: null })
 const windowStart = atom({ plugin: 'midstream', key: 'windowStart' } as const, null)
 const lastNote = atom({ plugin: 'midstream', key: 'lastNote' } as const, null)
@@ -81,9 +68,6 @@ const detail = atom({ plugin: 'midstream', key: 'detail' } as const, null)
 const tick = atom({ plugin: 'midstream', key: 'tick' } as const, 0)
 const features = atom({ plugin: 'midstream', key: 'features' } as const, ALL_ON)
 const thumbs = atom({ plugin: 'midstream', key: 'thumbs' } as const, {})
-
-const sameApplied = (a: Applied | null, b: Applied) =>
-  a !== null && a.level === b.level && a.isSupported === b.isSupported && a.isOverride === b.isOverride
 
 /** Both usage windows out of the API's readings; a window it did not report stays null. */
 function toLimits(readings: readonly { kind: string; percentUsed: number; resetsAt?: string }[]): Limits {
@@ -109,12 +93,84 @@ async function showDraft($: EngineInterface, text: string): Promise<void> {
   }
 }
 
+/** Attach files, and on a surface that draws vectors make small previews of the images. */
+async function addFiles($: EngineInterface, paths: readonly string[], canPreview: boolean): Promise<void> {
+  await update($, attachments, list => [...new Set([...list, ...paths])])
+
+  const images = paths.filter(isImage)
+  if (!canPreview || images.length === 0) return
+
+  try {
+    const made = await $.process.run(['powershell.exe', '-NoProfile', '-Command', thumbScript(images)], {
+      timeoutMs: 60_000,
+    })
+    const found = parseThumbs(made.stdout, images)
+    if (Object.keys(found).length > 0) {
+      await update($, thumbs, t => ({ ...t, ...found }))
+    }
+  } catch {
+    // no preview: the chip shows the glyph
+  }
+}
+
+// Whether the last drawing was on a surface that draws vectors (the desktop, phones).
+let drawsVectors = false
+
+// Pasting into the note field. The field takes text only, so while it has focus a small
+// PowerShell watcher sees a paste shortcut pressed in a Claude window and hands over the
+// clipboard's image (or copied files); they are attached with their previews.
+let watcher: AsyncGenerator<unknown, unknown> | null = null
+
+function stopWatching(): void {
+  const child = watcher
+  watcher = null
+  void child?.return(undefined)
+}
+
+async function watchPaste($: EngineInterface): Promise<void> {
+  if (watcher !== null) return
+
+  const child = $.process.spawn({
+    argv: ['powershell.exe', '-NoProfile', '-STA', '-EncodedCommand', encodePs(WATCH_PASTE)],
+  })
+  watcher = child
+  let pending = ''
+
+  try {
+    for await (const piece of child) {
+      if (watcher !== child) break
+      if (piece.stream !== 'stdout') continue
+
+      const parts = (pending + piece.text).split(/\r?\n/)
+      pending = parts.pop() ?? ''
+      const paths = parts.map(p => p.trim()).filter(p => p !== '')
+      if (paths.length > 0) {
+        await addFiles($, paths, drawsVectors)
+      }
+    }
+  } catch {
+    // not on Windows, or PowerShell would not start: pasting gives text only
+  } finally {
+    if (watcher === child) watcher = null
+  }
+}
+
 export const register: Register = on => {
   // What the person has typed in the note box. It lives here, not in `$.state`, so a
   // keystroke never makes the band redraw: a redraw that lands late would put an older
   // text back in the field and eat what was typed since. The band redraws only when the
   // rows the field needs, or the suggested level, change.
   let typed = ''
+
+  on('ui.focus', async ($, e, next) => {
+    if (e.component === 'AbovePrompt' && e.plugin === PLUGIN && e.element?.startsWith('note-') && drawsVectors) {
+      void watchPaste($)
+    } else {
+      stopWatching()
+    }
+
+    return next(e)
+  })
 
   on('session.start', async ($, e, next) => {
     const refreshRate = async () => {
@@ -132,16 +188,13 @@ export const register: Register = on => {
         await update($, windowStart, () => saved)
       }
 
-      // The effort choice carries over between chats; anything unknown falls back.
-      const mode = await $.store.get('effortMode')
-      await update($, effortMode, (): EffortMode => (isMode(mode) ? mode : 'session'))
-
       // Which parts of the band are shown, as the settings panel last left them.
       const shown = toFeatures(await $.store.get('features'))
       await update($, features, () => shown)
 
-      // Left behind by versions that had a Hold switch.
+      // Left behind by versions that had a Hold switch, and an effort selector.
       await $.store.delete('holdOn')
+      await $.store.delete('effortMode')
     } catch {
       // the store only keeps conveniences
     }
@@ -207,14 +260,13 @@ export const register: Register = on => {
         await $.store.set('windowStart', now)
       }
 
-      // The level a prompt the person sent asks for: what Auto applies to the turn it
-      // starts. Commands, the engine's own notices and other sessions' messages are
-      // skipped, so only the person's words move it.
+      // The level a prompt the person sent would want: the recommendation shown until
+      // something else is typed. Commands, the engine's own notices and other sessions'
+      // messages are skipped, so only the person's words move it.
       if (e.command === undefined && e.isMeta !== true && isFromPerson(e.origin)) {
         const verdict = suggest(e.text)
 
         if (verdict) {
-          await update($, autoPick, (): Verdict => verdict)
           await update($, suggestion, () => ({ ...verdict, source: 'sent' as const }))
         }
       }
@@ -241,30 +293,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The effort selector at work: every request of the main conversation is sent at the
-  // chosen level, so what the band shows is what Claude runs at. Subagents keep their
-  // own. Where the model takes no level nothing is changed, and anything that goes wrong
-  // sends the request exactly as the engine made it.
-  on('turn.step', async function* ($, e, next) {
-    let send: ReturnType<typeof decide>['send'] = null
-
-    if (e.agentId === undefined) {
-      try {
-        const want = wantedLevel(await read($, effortMode), await read($, autoPick))
-        const verdict = decide(e.effort, want)
-        send = verdict.send
-
-        if (!sameApplied(await read($, applied), verdict.applied)) {
-          await update($, applied, () => verdict.applied)
-        }
-      } catch {
-        send = null
-      }
-    }
-
-    return yield* next(send === null ? e : { ...e, effort: send })
-  })
-
   // Where the surface reports the prompt as it is typed (the terminal), suggest a level
   // live. An emptied box clears a draft's suggestion but keeps the one for a sent prompt.
   on('prompt.change', async ($, e, next) => {
@@ -282,14 +310,12 @@ export const register: Register = on => {
     // The desktop and phones draw vectors; the terminal draws glyphs instead.
     const Svg = e.surface === 'terminal' ? undefined : $.ui.resolve(e).Svg
     const isTerminal = e.surface === 'terminal'
+    drawsVectors = Svg !== undefined
 
     try {
       await read($, tick)
       const now = await $.clock.now()
       const sug = await read($, suggestion)
-      const auto = await read($, autoPick)
-      const mode = await read($, effortMode)
-      const ran = await read($, applied)
       const note = await read($, lastNote)
       const usage = await read($, limits)
       const started = await read($, windowStart)
@@ -304,13 +330,6 @@ export const register: Register = on => {
       const five = windowOf(now, usage.five, started)
       const week = weekOf(now, usage.week)
 
-      // The level in force, and the only one the meter and its label show: a fixed
-      // choice; for Auto the level of the last prompt sent; for Default what the last
-      // request ran at. What a draft would get is shown in the panel, never here.
-      const inForce = mode === 'session' ? (ran?.level ?? null) : mode === 'auto' ? (auto?.level ?? null) : mode
-      const level = inForce === null ? null : levelIndex(inForce)
-      const isUnsupported = mode !== 'session' && ran !== null && !ran.isSupported
-
       // The note field takes the room left after the rows around it, so every control
       // stays on screen however short the window is.
       const room = e.props.maxRows
@@ -318,7 +337,7 @@ export const register: Register = on => {
         3 +
         1 +
         (files.length > 0 ? (files.some(f => previews[f]) && Svg ? 3 : 1) : 0) +
-        (open === 'effort' ? 7 : open === 'usage' ? 5 : open === 'settings' ? 3 : 0)
+        (open === 'usage' ? 5 : open === 'settings' ? 3 : 0)
       const minRows = isTerminal || room < 12 ? 2 : 4
       const spare = isTerminal ? room - reserved - 1 : room - reserved
       const rowsFor = (n: number) => Math.max(minRows, Math.min(n, isTerminal ? 8 : 12, spare))
@@ -329,20 +348,13 @@ export const register: Register = on => {
       const rowsNeeded = (text: string) =>
         text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / wrapWidth)), 0)
 
-      // The level this text would need as a prompt, shown in the effort panel while it is
-      // typed. Only a change of level redraws the band, so typing is never interrupted;
-      // with the panel open the reasons follow along too.
+      // The level this text would need as a prompt, recommended while it is typed. Only a
+      // change of level redraws the band, so typing is never interrupted.
       const previewEffort = async (value: string) => {
         const verdict = suggest(value)
         const prev = await read($, suggestion)
-        const isWatching = (await read($, detail)) === 'effort'
-
         if (verdict) {
-          if (
-            prev?.source !== 'note' ||
-            prev.level !== verdict.level ||
-            (isWatching && prev.why !== verdict.why)
-          ) {
+          if (prev?.source !== 'note' || prev.level !== verdict.level) {
             await update($, suggestion, () => ({ ...verdict, source: 'note' as const }))
           }
         } else if (prev?.source === 'note') {
@@ -377,59 +389,12 @@ export const register: Register = on => {
             .filter(p => p !== '')
 
           if (paths.length > 0) {
-            await update($, attachments, list => [...new Set([...list, ...paths])])
-            await preview(paths)
+            await addFiles($, paths, Svg !== undefined)
           } else if (picked.exitCode !== 0) {
             $.ui.toast(`Could not open the file picker: ${picked.stderr.trim().slice(0, 120)}`)
           }
         } catch (error) {
           $.ui.toast(`Could not open the file picker: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-
-      // Small previews of attached images, on the surfaces that draw vectors. A preview
-      // that cannot be made leaves the file's glyph in its place.
-      const preview = async (paths: readonly string[]) => {
-        const images = paths.filter(isImage)
-        if (!Svg || images.length === 0) return
-
-        try {
-          const made = await $.process.run(['powershell.exe', '-NoProfile', '-Command', thumbScript(images)], {
-            timeoutMs: 60_000,
-          })
-          const found = parseThumbs(made.stdout, images)
-          if (Object.keys(found).length > 0) {
-            await update($, thumbs, t => ({ ...t, ...found }))
-          }
-        } catch {
-          // no preview: the chip shows the glyph
-        }
-      }
-
-      // Paste: the clipboard's image saved as a PNG (or files copied in Explorer), attached
-      // like picked files. The note field itself takes text only.
-      const paste = async () => {
-        try {
-          const got = await $.process.run(['powershell.exe', '-NoProfile', '-STA', '-Command', PASTE_IMAGE], {
-            timeoutMs: 30_000,
-          })
-          const paths = got.stdout
-            .split(/\r?\n/)
-            .map(p => p.trim())
-            .filter(p => p !== '')
-
-          if (paths.length > 0) {
-            await update($, attachments, list => [...new Set([...list, ...paths])])
-            await preview(paths)
-          } else {
-            $.ui.toast(
-              got.exitCode === 0
-                ? 'No image or files on the clipboard'
-                : `Could not read the clipboard: ${got.stderr.trim().slice(0, 120)}`,
-            )
-          }
-        } catch (error) {
-          $.ui.toast(`Could not read the clipboard: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
 
@@ -524,17 +489,8 @@ export const register: Register = on => {
         }
       }
 
-      const toggle = (which: 'effort' | 'usage' | 'settings') => () =>
+      const toggle = (which: 'usage' | 'settings') => () =>
         update($, detail, d => (d === which ? null : which))
-
-      const choose = (picked: EffortMode) => async () => {
-        await update($, effortMode, () => picked)
-        try {
-          await $.store.set('effortMode', picked)
-        } catch {
-          // the choice still holds for this chat
-        }
-      }
 
       const dim = (text: string) => (
         <Text dimColor size="caption">
@@ -543,8 +499,8 @@ export const register: Register = on => {
       )
       const pct = (p: number | null) => (p === null ? '–' : `${Math.round(p)}%`)
 
-      // The app's own band look: no frames of our own, text buttons, one filled button
-      // for the main action, and a spacer pushing it to the right.
+      // The app's own band look: no frames of our own, quiet text buttons, and a spacer
+      // pushing settings and refresh to the right.
       const spacer = <Box flexGrow={1} />
 
       // ---- the line that closes this row off from whatever is drawn below it ----------
@@ -567,11 +523,10 @@ export const register: Register = on => {
           ? 'Message Claude… (Shift+Enter or \\ then Enter for a new line)'
           : 'Message Claude… (Shift+Enter for a new line)'
 
-      // Enter sends. The surface always draws a hint of what Enter does beside a focused
-      // field (an empty label draws an empty pill), so it reads as the Enter key alone and
-      // the Send button stays the one send control. A newline is typed as in the main
-      // prompt (Shift+Enter), and the field grows with the text: it redraws only when the
-      // rows it needs change.
+      // Enter sends. The surface always draws what Enter does beside a focused field and a
+      // plugin cannot hide it, so that is the one send control: it reads Send. A newline is
+      // typed as in the main prompt (Shift+Enter), and the field grows with the text: it
+      // redraws only when the rows it needs change.
       const field = (
         <Input
           key={`note-${count}`}
@@ -579,7 +534,7 @@ export const register: Register = on => {
           rows={fieldRows}
           placeholder={placeholder}
           value={typed}
-          submitLabel="↵"
+          submitLabel={working ? 'Send note' : 'Send'}
           onInput={value => {
             typed = value
             const needed = rowsNeeded(value)
@@ -615,17 +570,18 @@ export const register: Register = on => {
           </Box>
         ) : null
 
-      // ---- one toolbar: attach, effort and usage as text buttons, Send on the right ----
+      // ---- one toolbar: attach, the recommended effort and the time left ---------------
 
-      const effortLabel =
-        mode === 'session'
-          ? `Default${inForce ? ` · ${LABEL[inForce]}` : ''}`
-          : mode === 'auto'
-            ? `Auto${inForce ? ` · ${LABEL[inForce]}` : ''}`
-            : LABEL[mode]
+      // The effort recommended for what is being typed (or was last sent): shown, never set.
+      const level = sug ? levelIndex(sug.level) : null
+      const effortLabel = sug ? `Recommended: ${LABEL[sug.level]}` : 'Recommended: –'
 
       const meter = Svg ? (
-        <Svg source={effortMeter(level, 14)} alt={inForce ? `Effort ${LABEL[inForce]}` : 'Effort not set'} />
+        <Svg
+          source={effortMeter(level, 24)}
+          alt={sug ? `Recommended effort ${LABEL[sug.level]}` : 'No effort recommended yet'}
+          height={24}
+        />
       ) : (
         <Text>
           {LEVELS.map((name, i) => (
@@ -647,10 +603,9 @@ export const register: Register = on => {
         <Text color={USAGE_BLUE}>◔</Text>
       )
 
-      // Collapsed, the button reads the 5-hour window alone: how much is used and the time
-      // left until it resets. The weekly window is the inner ring, and in the panel.
-      const fiveLeft = five.headline === 'Reset' || five.headline === '5 hours' ? null : five.headline
-      const usageLabel = `5h ${pct(five.percent)}${fiveLeft ? ` · ${fiveLeft} left` : ''}`
+      // Collapsed, the button reads the time left in the 5-hour window, nothing more. The
+      // rings show how much is used; the panel has both windows in full.
+      const usageLabel = five.headline === 'Reset' || five.headline === '5 hours' ? '5h left' : `${five.headline} left`
 
       const group = (...children: JSX.Element[]) => (
         <Box flexDirection="row" alignItems="center" columnGap={1}>
@@ -660,19 +615,17 @@ export const register: Register = on => {
 
       const toolbar = (
         <Box flexDirection="row" alignItems="center" columnGap={2}>
-          {show.attach &&
-            group(
-              <Button key="attach" plain dimColor onPress={attach}>
-                {files.length > 0 ? `+ Attach · ${files.length}` : '+ Attach'}
-              </Button>,
-              <Button key="paste" plain dimColor label="Paste" onPress={paste} />,
-            )}
+          {show.attach && (
+            <Button key="attach" plain dimColor onPress={attach}>
+              {files.length > 0 ? `+ Attach · ${files.length}` : '+ Attach'}
+            </Button>
+          )}
           {show.effort &&
             group(
               meter,
-              <Button key="effort" plain {...(open === 'effort' ? {} : { dimColor: true })} onPress={toggle('effort')}>
-                {`${effortLabel}${isUnsupported ? ' ⚠' : ''}`}
-              </Button>,
+              <Text dimColor key="effort">
+                {effortLabel}
+              </Text>,
             )}
           {show.usage &&
             group(
@@ -684,43 +637,10 @@ export const register: Register = on => {
           {spacer}
           <Button key="settings" plain {...(open === 'settings' ? {} : { dimColor: true })} label="⚙" onPress={toggle('settings')} />
           <Button key="refresh" plain dimColor label="↻" onPress={refresh} />
-          <Button key="send" variant="primary" onPress={() => send(typed)}>
-            {working ? 'Send note' : 'Send'}
-          </Button>
         </Box>
       )
 
-      // ---- the panels the effort and usage buttons open -------------------------------
-
-      const effortPanel = (
-        <Box flexDirection="column" rowGap={isTerminal ? 0 : 'xs'}>
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} rowGap="xs">
-            {MODES.map(m => (
-              <Button
-                key={`effort-${m}`}
-                label={MODE_LABEL[m]}
-                {...(m === mode ? { variant: 'primary' as const } : { plain: true as const, dimColor: true })}
-                onPress={choose(m)}
-              />
-            ))}
-          </Box>
-          {dim(modeLine(mode, auto))}
-          <Text size="caption" {...(isUnsupported ? { color: 'warning' } : { dimColor: true })}>
-            {appliedLine(ran)}
-          </Text>
-          {dim(
-            sug
-              ? `Why ${LABEL[sug.level]}, read from ${SOURCE[sug.source]}: ` +
-                  sug.parts
-                    .slice(0, 4)
-                    .map(p => `${p.label} ${p.points > 0 ? '+' : p.points < 0 ? '−' : ''}${Math.abs(p.points)}`)
-                    .join(' · ') +
-                  ` → Score ${sug.score}`
-              : 'How the effort level is chosen: a quick read of the text (length, hard words, code, files, lists), done on this machine.',
-          )}
-          {dim(THRESHOLDS)}
-        </Box>
-      )
+      // ---- the panels the usage and settings buttons open ------------------------------
 
       // Each window gets a legend line in its ring's color: what is used, when it resets.
       const legend = (color: string, name: string, percent: number | null, when: string) => (
@@ -772,18 +692,11 @@ export const register: Register = on => {
               />
             ))}
           </Box>
-          {dim('Show or hide parts of this bar. Hiding Effort keeps the chosen level in force. ↻ checks GitHub for a newer midstream and reloads.')}
+          {dim('Show or hide parts of this bar. ↻ checks GitHub for a newer midstream and reloads. Ctrl+V in the note pastes images too.')}
         </Box>
       )
 
-      const panel =
-        open === 'effort' && show.effort
-          ? effortPanel
-          : open === 'usage' && show.usage
-            ? usagePanel
-            : open === 'settings'
-              ? settingsPanel
-              : null
+      const panel = open === 'usage' && show.usage ? usagePanel : open === 'settings' ? settingsPanel : null
 
       const sentLine = note && (
         <Box flexDirection="row" alignItems="center" columnGap={1}>

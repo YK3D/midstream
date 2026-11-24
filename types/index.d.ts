@@ -1,12 +1,5 @@
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-/**
- * What the effort selector is set to: `session` leaves Claude Code's own level alone,
- * `auto` uses the level read from the last prompt the person sent, and a level runs
- * every request of the main conversation at that level.
- */
-export type EffortMode = 'session' | 'auto' | Effort
-
 /** One reason behind a suggestion: what was found, and the points it added or took off. */
 export type Part = { label: string; points: number; isNotable: boolean }
 
@@ -19,12 +12,6 @@ export type Verdict = { level: Effort; why: string; score: number; parts: Part[]
  * prompt that was just `sent`.
  */
 export type Suggestion = Verdict & { source: 'draft' | 'note' | 'sent' }
-
-/**
- * What the last model request of the main conversation actually ran at. `isSupported`
- * is false where the model or the effort setting takes no level, so none can be set.
- */
-export type Applied = { level: Effort | null; isSupported: boolean; isOverride: boolean }
 
 /** The parts of the band the settings panel can switch off; all on by default. */
 export type Features = { attach: boolean; effort: boolean; usage: boolean; lastNote: boolean; divider: boolean }
@@ -48,12 +35,6 @@ declare module 'claude-code' {
   interface PluginState {
     'midstream': {
       suggestion: Suggestion | null
-      /** The level read from the last prompt the person sent: what `auto` applies. */
-      autoPick: Verdict | null
-      /** What the effort selector is set to. Kept across chats in the store too. */
-      effortMode: EffortMode
-      /** What the last main-conversation request ran at, as the engine reported it. */
-      applied: Applied | null
       limits: Limits
       windowStart: number | null
       lastNote: Note | null
@@ -67,7 +48,7 @@ declare module 'claude-code' {
       /** Previews of attached images, by path. */
       thumbs: Record<string, Thumb>
       /** Which panel is open under the toolbar, if any. */
-      detail: 'effort' | 'usage' | 'settings' | null
+      detail: 'usage' | 'settings' | null
       /** Which parts of the band are shown. Kept across chats in the store too. */
       features: Features
       tick: number

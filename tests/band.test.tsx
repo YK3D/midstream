@@ -1,12 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  THRESHOLDS,
   USAGE_BLUE,
+  WATCH_PASTE,
   baseName,
-  decide,
-  isMode,
-  wantedLevel,
+  encodePs,
   effortMeter,
   glyphFor,
   levelIndex,
@@ -59,11 +57,14 @@ test('the bar has the note field, attach, effort, usage and send on each surface
 
     const field = await ui.find({ type: 'Input' })
     expect(field?.key).toBe('note-0')
-    // The surface always draws an Enter hint beside the field: it is the Enter key alone,
-    // never a second "send", and never an empty pill.
-    expect(field?.props.submitLabel).toBe('↵')
-    for (const key of ['attach', 'paste', 'send', 'usage', 'effort', 'settings', 'refresh']) {
+    // The hint the surface draws beside the field is the one send control.
+    expect(field?.props.submitLabel).toBe('Send')
+    for (const key of ['attach', 'usage', 'settings', 'refresh']) {
       expect(await ui.find({ type: 'Button', key })).toBeDefined()
+    }
+    // No second Send button, no Paste button (Ctrl+V pastes), no effort picker.
+    for (const key of ['send', 'paste', 'effort']) {
+      expect(await ui.find({ type: 'Button', key })).toBeUndefined()
     }
     // No hover cards: nothing hidden waiting for the pointer.
     expect(JSON.stringify(await ui.drawn())).not.toContain('"display":"none"')
@@ -91,68 +92,30 @@ test('the usage button opens both windows, and closes again', async ($, on) => {
   await ui.unmount()
 })
 
-test('the effort pill explains how the level is chosen, with the working', async ($, on) => {
-  world($, on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-
-  await ui.press({ key: 'effort' })
-  const rules = JSON.stringify(await ui.drawn())
-  expect(rules).toContain('How the effort level is chosen')
-  expect(rules).toContain(THRESHOLDS)
-
-  await ui.input({ key: 'note-0', kind: 'change', text: HEAVY })
-  const worked = JSON.stringify(await ui.drawn())
-  expect(worked).toContain('read from this note')
-  expect(worked).toContain('“refactor”')
-  expect(worked).toContain('Score')
-  await ui.unmount()
-})
-
-test('typing in the note box previews its level in the effort panel', async ($, on) => {
-  world($, on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await ui.press({ key: 'effort' })
-  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (Extra|Max)/)
-
-  await ui.input({ key: 'note-0', kind: 'change', text: HEAVY })
-  expect(JSON.stringify(await ui.drawn())).toMatch(/Why (Extra|Max)/)
-
-  // A draft is only a preview: the effort button keeps the level in force.
-  expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('Default')
-
-  // Emptying the field takes the preview away again.
-  await ui.input({ key: 'note-0', kind: 'change', text: '' })
-  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (Extra|Max)/)
-  await ui.unmount()
-})
-
-test('in Auto, a sent prompt sets the level the button and the meter show, on every surface', async ($, on) => {
+test('the effort shown is only a recommendation, read from what is typed or was sent', async ($, on) => {
   world($, on)
   on('prompt.submit', (_, e) => ({ text: e.text }))
+  const label = suggest(HEAVY)?.level === 'max' ? 'Max' : 'Extra'
 
-  const picker = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await picker.press({ key: 'effort' })
-  await picker.press({ key: 'effort-auto' })
-  await picker.press({ key: 'effort' })
-  await picker.unmount()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(JSON.stringify(await ui.drawn())).toContain('Recommended: –')
 
+  await ui.input({ key: 'note-0', kind: 'change', text: HEAVY })
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain(`Recommended: ${label}`)
+  expect(drawn).toContain(`"alt":"Recommended effort ${label}"`)
+
+  await ui.input({ key: 'note-0', kind: 'change', text: '' })
+  expect(JSON.stringify(await ui.drawn())).toContain('Recommended: –')
+  await ui.unmount()
+
+  // A prompt sent from the main box sets it too, on every surface.
   await $.prompt.submit({ text: HEAVY, wait: false, origin: { kind: 'composer' } })
-  const level = suggest(HEAVY)?.level
-  const label = level === 'max' ? 'Max' : 'Extra'
-
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-
-    expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe(`Auto · ${label}`)
-    if (surface === 'desktop') {
-      expect(JSON.stringify(await ui.drawn())).toContain(`"alt":"Effort ${label}"`)
-      await ui.press({ key: 'effort' })
-      expect(JSON.stringify(await ui.drawn())).toContain('your last prompt')
-      await ui.press({ key: 'effort' })
-    }
-    await ui.unmount()
+    const again = await $.ui.mount({ ...BAND, surface })
+    drawn = JSON.stringify(await again.drawn())
+    expect(drawn).toContain(`Recommended: ${label}`)
+    await again.unmount()
   }
 })
 
@@ -263,7 +226,7 @@ test('files alone can be sent, with a short request in their place', async ($, o
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await ui.press({ key: 'attach' })
-  await ui.press({ key: 'send' })
+  await ui.input({ key: 'note-0', text: '' })
 
   expect(prompts).toHaveLength(1)
   expect(prompts[0]).toContain('Please take a look at the attached files.')
@@ -320,10 +283,12 @@ test('a short band still shows every feature, with a smaller field', async ($, o
   const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, maxRows: 10 }, surface: 'desktop' })
 
   expect((await ui.find({ type: 'Input' }))?.props.rows).toBe(2)
-  for (const key of ['attach', 'send', 'usage', 'effort']) {
+  for (const key of ['attach', 'usage', 'settings', 'refresh']) {
     expect(await ui.find({ type: 'Button', key })).toBeDefined()
   }
-  expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% · 3h 12m left')
+  expect(JSON.stringify(await ui.drawn())).toContain('Recommended:')
+  // Collapsed, the usage button reads the time left alone.
+  expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('3h 12m left')
   await ui.unmount()
 })
 
@@ -378,7 +343,7 @@ test('both windows from the API show on every surface, in one chart', async ($, 
     const ui = await $.ui.mount({ ...BAND, surface })
 
     expect(JSON.stringify(await ui.drawn())).not.toContain('could not draw')
-    expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('5h 31% · 3h 12m left')
+    expect((await ui.find({ type: 'Button', key: 'usage' }))?.props.label).toBe('3h 12m left')
 
     await ui.press({ key: 'usage' })
     const drawn = JSON.stringify(await ui.drawn())
@@ -393,120 +358,8 @@ test('both windows from the API show on every surface, in one chart', async ($, 
   await desktop.unmount()
 })
 
-// ---- the effort selector ----------------------------------------------------
-
-/** The engine's side of a model request: it records the effort each one went out at. */
-const modelWorld = ($: unknown, on: Parameters<typeof mock.clock>[0]) => {
-  const clock = world($, on)
-  const efforts: unknown[] = []
-
-  on('turn.step', async function* (_, e) {
-    efforts.push(e.effort)
-
-    return {
-      turnId: e.turnId,
-      index: e.index,
-      answer: '',
-      toolUses: [],
-      stopReason: 'end_turn' as const,
-      usage: null,
-    }
-  })
-
-  return { clock, efforts }
-}
-
-const STEP = { turnId: 'turn-1', index: 0, model: 'opus', effort: 'medium' as const, messageCount: 1 }
-
-test("Default leaves every request at the engine's own level", async ($, on) => {
-  const { efforts } = modelWorld($, on)
-
-  const s = $.turn.step(STEP)
-  for await (const _ of s) void _
-  await s.result
-
-  expect(efforts).toEqual(['medium'])
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(JSON.stringify(await ui.drawn())).toContain('Default · Medium')
-  await ui.unmount()
-})
-
-test("picking a level in the panel sends main requests at it, not subagents'", async ($, on) => {
-  const { efforts } = modelWorld($, on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await ui.press({ key: 'effort' })
-  await ui.press({ key: 'effort-high' })
-
-  const drawn = JSON.stringify(await ui.drawn())
-  expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('High')
-  expect(JSON.stringify(await ui.drawn())).toContain('"alt":"Effort High"')
-  expect((await ui.find({ type: 'Button', key: 'effort-high' }))?.props.variant).toBe('primary')
-  expect((await ui.find({ type: 'Button', key: 'effort-low' }))?.props.variant).toBeUndefined()
-
-  const main = $.turn.step(STEP)
-  for await (const _ of main) void _
-  await main.result
-
-  const sub = $.turn.step({ ...STEP, agentId: 'agent-1' })
-  for await (const _ of sub) void _
-  await sub.result
-
-  expect(efforts).toEqual(['high', 'medium'])
-  expect(JSON.stringify(await ui.drawn())).toContain('set by the side note')
-  await ui.unmount()
-})
-
-test('a model that takes no effort is left alone, and the panel says so', async ($, on) => {
-  const { efforts } = modelWorld($, on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await ui.press({ key: 'effort' })
-  await ui.press({ key: 'effort-max' })
-
-  const s = $.turn.step({ turnId: 'turn-1', index: 0, model: 'haiku', messageCount: 1 })
-  for await (const _ of s) void _
-  await s.result
-
-  expect(efforts).toEqual([undefined])
-  expect(JSON.stringify(await ui.drawn())).toContain('takes no level')
-  await ui.unmount()
-})
-
-test('Auto runs a turn at the level of the prompt the person sent', async ($, on) => {
-  const { efforts } = modelWorld($, on)
-  on('prompt.submit', (_, e) => ({ text: e.text }))
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await ui.press({ key: 'effort' })
-  await ui.press({ key: 'effort-auto' })
-
-  // Nothing sent yet: Auto has no level, so the request keeps the engine's.
-  let s = $.turn.step(STEP)
-  for await (const _ of s) void _
-  await s.result
-
-  await $.prompt.submit({ text: HEAVY, wait: false, origin: { kind: 'composer' } })
-  s = $.turn.step({ ...STEP, index: 1 })
-  for await (const _ of s) void _
-  await s.result
-
-  // A background notification is not the person: it leaves the level where it was.
-  await $.prompt.submit({ text: 'fix the typo please', wait: false, origin: { kind: 'task-notification' } })
-  s = $.turn.step({ ...STEP, index: 2 })
-  for await (const _ of s) void _
-  await s.result
-
-  expect(efforts[0]).toBe('medium')
-  expect(['xhigh', 'max']).toContain(efforts[1])
-  expect(efforts[2]).toBe(efforts[1])
-  await ui.unmount()
-})
-
-test('the effort choice is kept for the next chat, and a bad stored value is ignored', async ($, on) => {
+test('leftovers of the effort selector and Hold are cleared from the store', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
-  // A store the test can read back: what the mod saved for the next chat.
   const saved: Record<string, unknown> = { effortMode: 'xhigh', holdOn: false }
   on('store.get', (_, e) => ({ value: saved[e.key] }))
   on('store.set', (_, e) => {
@@ -520,44 +373,28 @@ test('the effort choice is kept for the next chat, and a bad stored value is ign
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
   await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  // The old Hold switch's leftover is cleared.
   expect('holdOn' in saved).toBe(false)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('Extra')
-  await ui.press({ key: 'effort' })
-  await ui.press({ key: 'effort-low' })
-  expect(saved.effortMode).toBe('low')
-  await ui.unmount()
-
-  saved.effortMode = 'turbo'
-  await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
-  const again = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await again.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('Default')
-  await again.unmount()
+  expect('effortMode' in saved).toBe(false)
 })
 
-test('both panels draw on every surface, with every effort choice', async ($, on) => {
+test('both panels draw on every surface', async ($, on) => {
   world($, on)
 
   for (const surface of ['terminal', 'desktop', 'mobile', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
 
-    await ui.press({ key: 'effort' })
+    await ui.press({ key: 'usage' })
     let drawn = JSON.stringify(await ui.drawn())
     expect(drawn).not.toContain('could not draw')
-    expect(drawn).toContain(THRESHOLDS)
-    for (const m of ['session', 'auto', 'low', 'medium', 'high', 'xhigh', 'max']) {
-      expect(await ui.find({ type: 'Button', key: `effort-${m}` })).toBeDefined()
-    }
+    expect(drawn).toContain('Weekly')
 
-    await ui.press({ key: 'usage' })
+    await ui.press({ key: 'settings' })
     drawn = JSON.stringify(await ui.drawn())
     expect(drawn).not.toContain('could not draw')
-    expect(drawn).toContain('Weekly')
-    expect(drawn).not.toContain(THRESHOLDS)
+    expect(drawn).not.toContain('Weekly')
+    expect(await ui.find({ type: 'Button', key: 'feature-effort' })).toBeDefined()
 
-    await ui.press({ key: 'usage' })
+    await ui.press({ key: 'settings' })
     await ui.unmount()
   }
 })
@@ -572,7 +409,7 @@ test('the band draws no frames of its own, so only the app draws corners', async
     const ui = await $.ui.mount({ ...BAND, surface })
     await ui.press({ key: 'attach' })
     expect(JSON.stringify(await ui.drawn())).not.toContain('borderStyle')
-    await ui.press({ key: 'effort' })
+    await ui.press({ key: 'settings' })
     expect(JSON.stringify(await ui.drawn())).not.toContain('borderStyle')
     await ui.press({ key: 'usage' })
     expect(JSON.stringify(await ui.drawn())).not.toContain('borderStyle')
@@ -690,8 +527,7 @@ test('settings hide parts of the bar, and the choice is kept for the next chat',
 
   expect(await ui.find({ type: 'Button', key: 'usage' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'attach' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'paste' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'effort' })).toBeDefined()
+  expect(JSON.stringify(await ui.drawn())).toContain('Recommended:')
   expect(kept.get('features')).toEqual({ attach: false, effort: true, usage: false, lastNote: true, divider: true })
 
   // Back on again.
@@ -701,21 +537,14 @@ test('settings hide parts of the bar, and the choice is kept for the next chat',
   await ui.unmount()
 })
 
-test('paste attaches the image saved from the clipboard', async ($, on) => {
-  world($, on)
-  const runs: string[] = []
-  on('process.run', (_, e) => {
-    runs.push(e.argv.join(' '))
-    return {
-      value: { exitCode: 0, stdout: 'C:\\Temp\\midstream-paste-1.png\r\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-    }
-  })
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await ui.press({ key: 'paste' })
-  expect(runs[0]).toContain('Clipboard')
-  expect(JSON.stringify(await ui.drawn())).toContain('midstream-paste-1.png')
-  await ui.unmount()
+test('Ctrl+V is watched in a Claude window only, and the script goes in encoded', () => {
+  expect(WATCH_PASTE).toContain('0x56')
+  expect(WATCH_PASTE).toContain('0x2D')
+  expect(WATCH_PASTE).toContain("-like 'claude*'")
+  expect(WATCH_PASTE).toContain('ContainsImage')
+  // UTF-16LE then base64, as -EncodedCommand reads it.
+  expect(encodePs('ab')).toBe('YQBiAA==')
+  expect(encodePs('a')).toBe('YQA=')
 })
 
 test('stored settings fall back to on, and the update result reads as one line', () => {
@@ -757,26 +586,4 @@ test('attachments are named by their file and handed over as paths', () => {
   expect(text).toContain('- C:\\a.png')
   expect(text).toContain('- C:\\b.pdf')
   expect(withFiles('', ['C:\\a.png'])).toContain('Please take a look')
-})
-
-test('the selector asks for the right level, and never one a model cannot take', () => {
-  expect(wantedLevel('session', null)).toBeNull()
-  expect(wantedLevel('auto', null)).toBeNull()
-  expect(wantedLevel('auto', suggest(HEAVY))).toBe(suggest(HEAVY)?.level ?? null)
-  expect(wantedLevel('high', null)).toBe('high')
-
-  expect(decide(undefined, 'max').send).toBeNull()
-  expect(decide(undefined, 'max').applied.isSupported).toBe(false)
-  expect(decide('medium', null).send).toBeNull()
-  expect(decide('high', 'high').send).toBeNull()
-  expect(decide('medium', 'high')).toEqual({
-    send: 'high',
-    applied: { level: 'high', isSupported: true, isOverride: true },
-  })
-  expect(decide(3, 'high').send).toBeNull()
-
-  expect(isMode('auto')).toBe(true)
-  expect(isMode('xhigh')).toBe(true)
-  expect(isMode('turbo')).toBe(false)
-  expect(isMode(undefined)).toBe(false)
 })

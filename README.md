@@ -2,10 +2,10 @@
 
 Talk to Claude **midstream**: a side note box for Claude Code, drawn just above the prompt.
 
-- **Notes mid-response.** Type while Claude is working and press Enter (or **Send note**): Claude reads the note at its next step and answers it in the same response. While Claude is idle, the note goes in as an ordinary message.
-- **Attach files and images.** **+ Attach** opens a file picker; **Paste** attaches the image on your clipboard (or files copied in Explorer). Images show a small preview, and Claude opens the files with its own tools.
-- **Effort you can trust.** Pick **Default**, **Auto** (a level read from your last prompt) or a fixed level from Low to Max. Every request of the main conversation runs at that level, and the five-bar meter shows the level actually in force.
-- **Usage at a glance.** One two-ring chart: the outer blue ring is your 5-hour window, the inner violet ring your weekly window. The button shows the 5-hour window and the time left until it resets; click it for both windows in detail.
+- **Notes mid-response.** Type while Claude is working and press Enter (or click **Send note** beside the field): Claude reads the note at its next step and answers it in the same response. While Claude is idle, the note goes in as an ordinary message.
+- **Attach files and images.** **+ Attach** opens a file picker, and pasting with Ctrl+V or Shift+Insert in the note attaches the image on your clipboard (or files copied in Explorer). Images show a small preview, and Claude opens the files with its own tools.
+- **Recommended effort.** A five-bar meter shows the effort level your note or last prompt calls for, read from its length, wording, code and files. It only recommends; it never changes Claude's setting.
+- **Usage at a glance.** One two-ring chart: the outer blue ring is your 5-hour window, the inner violet ring your weekly window. The button shows the time left in the 5-hour window; click it for both windows in detail.
 - **Settings.** **⚙** shows or hides parts of the bar (Attach, Effort, Usage, the last-note line, the divider); your choice is kept.
 - **Updates.** **↻** checks GitHub for a newer midstream, installs it, and reloads plugins.
 
