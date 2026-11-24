@@ -40,7 +40,7 @@ export type Note = { text: string; mode: 'live' | 'prompt'; at: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'side-desk': {
+    'midstream': {
       suggestion: Suggestion | null
       /** The level read from the last prompt the person sent: what `auto` applies. */
       autoPick: Verdict | null

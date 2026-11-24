@@ -1,6 +1,6 @@
-# side-desk
+# midstream
 
-A side note box for Claude Code, drawn just above the prompt.
+Talk to Claude **midstream**: a side note box for Claude Code, drawn just above the prompt.
 
 - **Notes mid-response.** Type while Claude is working and press Enter (or **Send note**): Claude reads the note at its next step and answers it in the same response. While Claude is idle, the note goes in as an ordinary message.
 - **Attach files.** **+ Attach** opens a file picker (Windows) and names the files in your note, so Claude opens them with its own tools.
@@ -13,7 +13,7 @@ A side note box for Claude Code, drawn just above the prompt.
 At the prompt of a Claude Code terminal session:
 
 ```
-/plugin install side-desk --marketplace YK3D/side-desk
+/plugin install midstream --marketplace YK3D/midstream
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user is first).
@@ -21,10 +21,10 @@ Answer `y` to add the marketplace, then pick a scope (user is first).
 From a shell:
 
 ```
-claude plugin install side-desk --marketplace YK3D/side-desk
+claude plugin install midstream --marketplace YK3D/midstream
 ```
 
-In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `YK3D/side-desk`, then **Add plugin**.
+In the desktop app, where `/plugin` does not run: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `YK3D/midstream`, then **Add plugin**.
 
 ## Notes
 

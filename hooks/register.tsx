@@ -31,7 +31,7 @@ import {
   withFiles,
 } from './logic'
 
-const PLUGIN = 'side-desk'
+const PLUGIN = 'midstream'
 
 /** What the suggested level was read from, as the explanation says it. */
 const SOURCE = { draft: 'your draft', note: 'this note', sent: 'your last prompt' } as const
@@ -57,19 +57,19 @@ function isFromPerson(origin: PromptOrigin | undefined): boolean {
   return !NOT_THE_PERSON.has(origin.kind)
 }
 
-const suggestion = atom({ plugin: 'side-desk', key: 'suggestion' } as const, null)
-const autoPick = atom({ plugin: 'side-desk', key: 'autoPick' } as const, null)
-const effortMode = atom({ plugin: 'side-desk', key: 'effortMode' } as const, 'session')
-const applied = atom({ plugin: 'side-desk', key: 'applied' } as const, null)
-const limits = atom({ plugin: 'side-desk', key: 'limits' } as const, { five: null, week: null })
-const windowStart = atom({ plugin: 'side-desk', key: 'windowStart' } as const, null)
-const lastNote = atom({ plugin: 'side-desk', key: 'lastNote' } as const, null)
-const isWorking = atom({ plugin: 'side-desk', key: 'isWorking' } as const, false)
-const sent = atom({ plugin: 'side-desk', key: 'sent' } as const, 0)
-const lines = atom({ plugin: 'side-desk', key: 'lines' } as const, 1)
-const attachments = atom({ plugin: 'side-desk', key: 'attachments' } as const, [])
-const detail = atom({ plugin: 'side-desk', key: 'detail' } as const, null)
-const tick = atom({ plugin: 'side-desk', key: 'tick' } as const, 0)
+const suggestion = atom({ plugin: 'midstream', key: 'suggestion' } as const, null)
+const autoPick = atom({ plugin: 'midstream', key: 'autoPick' } as const, null)
+const effortMode = atom({ plugin: 'midstream', key: 'effortMode' } as const, 'session')
+const applied = atom({ plugin: 'midstream', key: 'applied' } as const, null)
+const limits = atom({ plugin: 'midstream', key: 'limits' } as const, { five: null, week: null })
+const windowStart = atom({ plugin: 'midstream', key: 'windowStart' } as const, null)
+const lastNote = atom({ plugin: 'midstream', key: 'lastNote' } as const, null)
+const isWorking = atom({ plugin: 'midstream', key: 'isWorking' } as const, false)
+const sent = atom({ plugin: 'midstream', key: 'sent' } as const, 0)
+const lines = atom({ plugin: 'midstream', key: 'lines' } as const, 1)
+const attachments = atom({ plugin: 'midstream', key: 'attachments' } as const, [])
+const detail = atom({ plugin: 'midstream', key: 'detail' } as const, null)
+const tick = atom({ plugin: 'midstream', key: 'tick' } as const, 0)
 
 const sameApplied = (a: Applied | null, b: Applied) =>
   a !== null && a.level === b.level && a.isSupported === b.isSupported && a.isOverride === b.isOverride
@@ -715,7 +715,7 @@ export const register: Register = on => {
       // Say what went wrong in the band rather than letting it vanish.
       return (
         <Text color="error" size="caption">
-          {`side-desk could not draw: ${error instanceof Error ? error.message : String(error)}`}
+          {`midstream could not draw: ${error instanceof Error ? error.message : String(error)}`}
         </Text>
       )
     }

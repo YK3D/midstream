@@ -18,7 +18,7 @@ import {
 } from '../hooks/logic'
 
 const BAND = {
-  plugin: 'side-desk',
+  plugin: 'midstream',
   component: 'AbovePrompt',
   requestId: 'band',
   props: {
