@@ -1,6 +1,6 @@
 {
   "name": "midstream",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "A side note box above the prompt: send Claude notes mid-response, attach files, pick the effort level Claude actually runs at, and watch your 5-hour and weekly usage in one chart.",
   "author": { "name": "YK3D" },
   "license": "MIT",

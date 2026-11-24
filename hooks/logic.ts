@@ -9,7 +9,7 @@ export const LABEL: Record<Effort, string> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
-  xhigh: 'X-High',
+  xhigh: 'Extra',
   max: 'Max',
 }
 export const BARS: Record<Effort, string> = {
@@ -27,7 +27,7 @@ export const USAGE_BLUE = '#2C84DB'
 const TRACK = '#8b8b8b'
 
 /** Which score reaches which level: the lowest score each level starts at. */
-export const THRESHOLDS = 'Low ≤ 0 · Medium 1–2 · High 3–4 · X-High 5–6 · Max 7+'
+export const THRESHOLDS = 'Low ≤ 0 · Medium 1–2 · High 3–4 · Extra 5–6 · Max 7+'
 
 export function levelIndex(level: Effort): number {
   return LEVELS.indexOf(level)

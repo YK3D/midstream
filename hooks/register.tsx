@@ -494,8 +494,14 @@ export const register: Register = on => {
           const ran = await $.process.run(['claude', 'plugin', 'update', `${PLUGIN}@${PLUGIN}`, '--json'], {
             timeoutMs: 150_000,
           })
-          const { line } = updateResult(ran.stdout)
-          $.ui.toast(ran.exitCode === 0 ? line : `Update failed: ${line}`)
+          const { line, isNew } = updateResult(ran.stdout)
+          $.ui.toast(
+            ran.exitCode !== 0
+              ? `Update failed: ${line}`
+              : isNew
+                ? `${line}. Reloading; if the bar has not changed, restart Claude Code.`
+                : line,
+          )
         } catch (error) {
           $.ui.toast(`Could not check for updates: ${error instanceof Error ? error.message : String(error)}`)
         }

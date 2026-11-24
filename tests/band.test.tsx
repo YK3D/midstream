@@ -114,17 +114,17 @@ test('typing in the note box previews its level in the effort panel', async ($, 
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await ui.press({ key: 'effort' })
-  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (X-High|Max)/)
+  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (Extra|Max)/)
 
   await ui.input({ key: 'note-0', kind: 'change', text: HEAVY })
-  expect(JSON.stringify(await ui.drawn())).toMatch(/Why (X-High|Max)/)
+  expect(JSON.stringify(await ui.drawn())).toMatch(/Why (Extra|Max)/)
 
   // A draft is only a preview: the effort button keeps the level in force.
   expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('Default')
 
   // Emptying the field takes the preview away again.
   await ui.input({ key: 'note-0', kind: 'change', text: '' })
-  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (X-High|Max)/)
+  expect(JSON.stringify(await ui.drawn())).not.toMatch(/Why (Extra|Max)/)
   await ui.unmount()
 })
 
@@ -140,7 +140,7 @@ test('in Auto, a sent prompt sets the level the button and the meter show, on ev
 
   await $.prompt.submit({ text: HEAVY, wait: false, origin: { kind: 'composer' } })
   const level = suggest(HEAVY)?.level
-  const label = level === 'max' ? 'Max' : 'X-High'
+  const label = level === 'max' ? 'Max' : 'Extra'
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
@@ -524,7 +524,7 @@ test('the effort choice is kept for the next chat, and a bad stored value is ign
   expect('holdOn' in saved).toBe(false)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('X-High')
+  expect((await ui.find({ type: 'Button', key: 'effort' }))?.props.label).toBe('Extra')
   await ui.press({ key: 'effort' })
   await ui.press({ key: 'effort-low' })
   expect(saved.effortMode).toBe('low')
