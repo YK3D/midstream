@@ -321,59 +321,6 @@ export function updateResult(stdout: string): { line: string; isNew: boolean } {
   return { line: 'Could not read the update result', isNew: false }
 }
 
-/**
- * PowerShell that runs while the note field has focus: on each Ctrl+V or Shift+Insert
- * pressed while a
- * Claude window is in front, it saves the clipboard's image to a new PNG in the temp
- * folder and prints its path, or prints the paths of files copied in Explorer. Clipboard
- * text is left to the field, which pastes it itself.
- */
-export const WATCH_PASTE = [
-  'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
-  "Add-Type -Namespace Midstream -Name Keys -MemberDefinition '" +
-    '[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);' +
-    '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();' +
-    '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr window, out uint process);' +
-    "'",
-  '$c=[System.Windows.Forms.Clipboard]',
-  '$was=$false',
-  'while($true){' +
-    '$k=[Midstream.Keys];$on={param($v)($k::GetAsyncKeyState($v) -band 0x8000) -ne 0};' +
-    '$down=((& $on 0x11) -and (& $on 0x56)) -or ((& $on 0x10) -and (& $on 0x2D));' +
-    'if($down -and -not $was){' +
-    '$id=[uint32]0;[void][Midstream.Keys]::GetWindowThreadProcessId([Midstream.Keys]::GetForegroundWindow(),[ref]$id);' +
-    "if((Get-Process -Id $id -ErrorAction SilentlyContinue).ProcessName -like 'claude*'){" +
-    "if($c::ContainsImage()){$p=Join-Path $env:TEMP ('midstream-paste-'+(Get-Date -Format 'yyyyMMdd-HHmmss-fff')+'.png');$c::GetImage().Save($p,[System.Drawing.Imaging.ImageFormat]::Png);[Console]::Out.WriteLine($p)}" +
-    'elseif($c::ContainsFileDropList()){$c::GetFileDropList()|ForEach-Object{[Console]::Out.WriteLine($_)}}' +
-    '}};$was=$down;Start-Sleep -Milliseconds 40}',
-].join(';')
-
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-/**
- * A script as PowerShell's -EncodedCommand takes it (UTF-16LE, base64), so no quote or
- * backslash in it is touched on the way.
- */
-export function encodePs(script: string): string {
-  const bytes: number[] = []
-  for (let i = 0; i < script.length; i++) {
-    const code = script.charCodeAt(i)
-    bytes.push(code & 255, code >> 8)
-  }
-
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
-    out +=
-      B64[(n >> 18) & 63]! +
-      B64[(n >> 12) & 63]! +
-      (i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '=') +
-      (i + 2 < bytes.length ? B64[n & 63]! : '=')
-  }
-
-  return out
-}
-
 // ---- image previews -----------------------------------------------------------
 
 export const isImage = (path: string) => IMAGES.test(path)

@@ -2,9 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   USAGE_BLUE,
-  WATCH_PASTE,
   baseName,
-  encodePs,
   effortMeter,
   glyphFor,
   levelIndex,
@@ -62,7 +60,7 @@ test('the bar has the note field, attach, effort, usage and send on each surface
     for (const key of ['attach', 'usage', 'settings', 'refresh']) {
       expect(await ui.find({ type: 'Button', key })).toBeDefined()
     }
-    // No second Send button, no Paste button (Ctrl+V pastes), no effort picker.
+    // No second Send button, no Paste button, no effort picker.
     for (const key of ['send', 'paste', 'effort']) {
       expect(await ui.find({ type: 'Button', key })).toBeUndefined()
     }
@@ -535,16 +533,6 @@ test('settings hide parts of the bar, and the choice is kept for the next chat',
   expect(await ui.find({ type: 'Button', key: 'usage' })).toBeDefined()
   await ui.press({ key: 'settings' })
   await ui.unmount()
-})
-
-test('Ctrl+V is watched in a Claude window only, and the script goes in encoded', () => {
-  expect(WATCH_PASTE).toContain('0x56')
-  expect(WATCH_PASTE).toContain('0x2D')
-  expect(WATCH_PASTE).toContain("-like 'claude*'")
-  expect(WATCH_PASTE).toContain('ContainsImage')
-  // UTF-16LE then base64, as -EncodedCommand reads it.
-  expect(encodePs('ab')).toBe('YQBiAA==')
-  expect(encodePs('a')).toBe('YQA=')
 })
 
 test('stored settings fall back to on, and the update result reads as one line', () => {

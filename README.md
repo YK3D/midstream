@@ -3,7 +3,7 @@
 Talk to Claude **midstream**: a side note box for Claude Code, drawn just above the prompt.
 
 - **Notes mid-response.** Type while Claude is working and press Enter (or click **Send note** beside the field): Claude reads the note at its next step and answers it in the same response. While Claude is idle, the note goes in as an ordinary message.
-- **Attach files and images.** **+ Attach** opens a file picker, and pasting with Ctrl+V or Shift+Insert in the note attaches the image on your clipboard (or files copied in Explorer). Images show a small preview, and Claude opens the files with its own tools.
+- **Attach files and images.** **+ Attach** opens a file picker. Images show a small preview, and Claude opens the files with its own tools.
 - **Recommended effort.** A five-bar meter shows the effort level your note or last prompt calls for, read from its length, wording, code and files. It only recommends; it never changes Claude's setting.
 - **Usage at a glance.** One two-ring chart: the outer blue ring is your 5-hour window, the inner violet ring your weekly window. The button shows the time left in the 5-hour window; click it for both windows in detail.
 - **Settings.** **⚙** shows or hides parts of the bar (Attach, Effort, Usage, the last-note line, the divider); your choice is kept.
@@ -29,8 +29,7 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 
 ## Notes
 
-- The file picker, Paste and previews use PowerShell, so they work on Windows only; elsewhere, paste a path into your note.
-- Models that take no effort setting are left alone, and the effort panel says so.
+- The file picker and previews use PowerShell, so they work on Windows only; elsewhere, paste a path into your note.
 - Usage figures are the ones the API reports; until it reports a window, that ring stays empty and shows `–`.
 
 ## License

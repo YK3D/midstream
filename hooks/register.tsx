@@ -7,7 +7,6 @@ import {
   ALL_ON,
   BARS,
   DIVIDER,
-  WATCH_PASTE,
   FEATURES,
   FIVE_HOURS,
   LABEL,
@@ -16,7 +15,6 @@ import {
   USAGE_BLUE,
   WEEK_VIOLET,
   baseName,
-  encodePs,
   effortMeter,
   glyphFor,
   isImage,
@@ -113,47 +111,6 @@ async function addFiles($: EngineInterface, paths: readonly string[], canPreview
   }
 }
 
-// Whether the last drawing was on a surface that draws vectors (the desktop, phones).
-let drawsVectors = false
-
-// Pasting into the note field. The field takes text only, so while it has focus a small
-// PowerShell watcher sees a paste shortcut pressed in a Claude window and hands over the
-// clipboard's image (or copied files); they are attached with their previews.
-let watcher: AsyncGenerator<unknown, unknown> | null = null
-
-function stopWatching(): void {
-  const child = watcher
-  watcher = null
-  void child?.return(undefined)
-}
-
-async function watchPaste($: EngineInterface): Promise<void> {
-  if (watcher !== null) return
-
-  const child = $.process.spawn({
-    argv: ['powershell.exe', '-NoProfile', '-STA', '-EncodedCommand', encodePs(WATCH_PASTE)],
-  })
-  watcher = child
-  let pending = ''
-
-  try {
-    for await (const piece of child) {
-      if (watcher !== child) break
-      if (piece.stream !== 'stdout') continue
-
-      const parts = (pending + piece.text).split(/\r?\n/)
-      pending = parts.pop() ?? ''
-      const paths = parts.map(p => p.trim()).filter(p => p !== '')
-      if (paths.length > 0) {
-        await addFiles($, paths, drawsVectors)
-      }
-    }
-  } catch {
-    // not on Windows, or PowerShell would not start: pasting gives text only
-  } finally {
-    if (watcher === child) watcher = null
-  }
-}
 
 export const register: Register = on => {
   // What the person has typed in the note box. It lives here, not in `$.state`, so a
@@ -161,16 +118,6 @@ export const register: Register = on => {
   // text back in the field and eat what was typed since. The band redraws only when the
   // rows the field needs, or the suggested level, change.
   let typed = ''
-
-  on('ui.focus', async ($, e, next) => {
-    if (e.component === 'AbovePrompt' && e.plugin === PLUGIN && e.element?.startsWith('note-') && drawsVectors) {
-      void watchPaste($)
-    } else {
-      stopWatching()
-    }
-
-    return next(e)
-  })
 
   on('session.start', async ($, e, next) => {
     const refreshRate = async () => {
@@ -310,7 +257,6 @@ export const register: Register = on => {
     // The desktop and phones draw vectors; the terminal draws glyphs instead.
     const Svg = e.surface === 'terminal' ? undefined : $.ui.resolve(e).Svg
     const isTerminal = e.surface === 'terminal'
-    drawsVectors = Svg !== undefined
 
     try {
       await read($, tick)
@@ -692,7 +638,7 @@ export const register: Register = on => {
               />
             ))}
           </Box>
-          {dim('Show or hide parts of this bar. ↻ checks GitHub for a newer midstream and reloads. Ctrl+V in the note pastes images too.')}
+          {dim('Show or hide parts of this bar. ↻ checks GitHub for a newer midstream and reloads.')}
         </Box>
       )
 
