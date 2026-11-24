@@ -1,0 +1,6 @@
+{
+  "name": "side-desk",
+  "owner": { "name": "YK3D" },
+  "description": "side-desk: a side note box for Claude Code with mid-response notes, an effort selector and a usage chart.",
+  "plugins": [{ "name": "side-desk", "source": "./" }]
+}
